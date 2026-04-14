@@ -1,25 +1,19 @@
 from azure.identity import DefaultAzureCredential
 from azure.ai.ml import MLClient
-from azure.ai.ml.entities import ManagedOnlineEndpoint, ManagedOnlineDeployment, Model
-from azure.ai.ml.constants import AssetTypes
-
+from azure.ai.ml.entities import ManagedOnlineEndpoint, ManagedOnlineDeployment
 import argparse
 import datetime
 
-
 def parse_args():
     parser = argparse.ArgumentParser()
-
     parser.add_argument("--subscription-id", dest="subscription_id", required=True)
     parser.add_argument("--resource-group", dest="resource_group", required=True)
     parser.add_argument("--workspace", dest="workspace", required=True)
     parser.add_argument("--endpoint-name", dest="endpoint_name", default="diabetes-endpoint")
     parser.add_argument("--deployment-name", dest="deployment_name", default="blue")
-
     return parser.parse_args()
 
-
-def get_ml_client(subscription_id: str, resource_group: str, workspace: str) -> MLClient:
+def get_ml_client(subscription_id, resource_group, workspace):
     credential = DefaultAzureCredential()
     return MLClient(
         credential=credential,
@@ -28,55 +22,42 @@ def get_ml_client(subscription_id: str, resource_group: str, workspace: str) -> 
         workspace_name=workspace,
     )
 
-
-def ensure_endpoint(ml_client: MLClient, endpoint_name: str) -> ManagedOnlineEndpoint:
+def ensure_endpoint(ml_client, endpoint_name):
     try:
         endpoint = ml_client.online_endpoints.get(name=endpoint_name)
+        print(f"Endpoint '{endpoint_name}' already exists.")
         return endpoint
     except Exception:
-        unique_suffix = datetime.datetime.now().strftime("%m%d%H%M%f")
-        name = endpoint_name or f"endpoint-{unique_suffix}"
-
+        print(f"Creating new endpoint '{endpoint_name}'...")
         endpoint = ManagedOnlineEndpoint(
-            name=name,
+            name=endpoint_name,
             description="Online endpoint for MLflow diabetes model",
             auth_mode="key",
         )
-
         return ml_client.begin_create_or_update(endpoint).result()
 
-
-def create_or_update_deployment(
-    ml_client: MLClient,
-    endpoint_name: str,
-    deployment_name: str,
-) -> ManagedOnlineDeployment:
-    model = Model(
-        path="./model",
-        type=AssetTypes.MLFLOW_MODEL,
-        description="MLflow diabetes classification model",
-    )
+def create_or_update_deployment(ml_client, endpoint_name, deployment_name):
+    # Get latest registered model from Azure ML registry
+    print("Fetching latest registered model 'diabetes-model'...")
+    latest_model = ml_client.models.get(name="diabetes-model", label="latest")
+    print(f"Using model: {latest_model.name} version {latest_model.version}")
 
     deployment = ManagedOnlineDeployment(
         name=deployment_name,
         endpoint_name=endpoint_name,
-        model=model,
+        model=latest_model.id,
         instance_type="Standard_D2as_v4",
         instance_count=1,
     )
-
     return ml_client.online_deployments.begin_create_or_update(deployment).result()
 
-
-def set_traffic_to_deployment(ml_client: MLClient, endpoint_name: str, deployment_name: str) -> None:
+def set_traffic_to_deployment(ml_client, endpoint_name, deployment_name):
     endpoint = ml_client.online_endpoints.get(name=endpoint_name)
     endpoint.traffic = {deployment_name: 100}
     ml_client.begin_create_or_update(endpoint).result()
 
-
-def main() -> None:
+def main():
     args = parse_args()
-
     print("Connecting to Azure Machine Learning workspace...")
     ml_client = get_ml_client(
         subscription_id=args.subscription_id,
@@ -101,7 +82,6 @@ def main() -> None:
 
     endpoint = ml_client.online_endpoints.get(name=endpoint.name)
     print(f"Deployment complete. Scoring URI: {endpoint.scoring_uri}")
-
 
 if __name__ == "__main__":
     main()
