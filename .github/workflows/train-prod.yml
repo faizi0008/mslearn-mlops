@@ -56,7 +56,7 @@ jobs:
             --set inputs.training_data.path=azureml:diabetes-prod-folder@latest \
             --stream | tee training_output.log
 
-      - name: Register trained model        # ← NEW STEP
+      - name: Register trained model
         run: |
           echo "Registering model from job: $JOB_NAME"
           az ml model create \
@@ -65,7 +65,7 @@ jobs:
             --type mlflow_model \
             --resource-group "${{ steps.detect.outputs.resource_group }}" \
             --workspace-name "${{ steps.detect.outputs.workspace }}"
-          echo "Model registered successfully as 'diabetes-model'"
+          echo "Model registered successfully!"
 
       - name: Extract prod metrics from logs
         id: parse-metrics
