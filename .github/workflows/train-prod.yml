@@ -1,12 +1,11 @@
 name: Train model in prod (PR comment)
-
 on:
   issue_comment:
     types: [created]
-
 permissions:
   contents: read
   issues: write
+  pull-requests: write    # ← ADDED FIX
 
 jobs:
   train-prod:
@@ -15,7 +14,6 @@ jobs:
       contains(github.event.comment.body, '/train-prod')
     runs-on: ubuntu-latest
     environment: prod
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -37,15 +35,12 @@ jobs:
             echo "No resource group starting with rg-ai300-l found." >&2
             exit 1
           fi
-
           WS_NAME=$(az ml workspace list --resource-group "$RG_NAME" --query "[?starts_with(name,'mlw-ai300-l')].name | [0]" -o tsv)
           if [ -z "$WS_NAME" ]; then
             echo "No workspace starting with mlw-ai300-l found in $RG_NAME." >&2
             exit 1
           fi
-
           az configure --defaults group="$RG_NAME" workspace="$WS_NAME"
-
           echo "resource_group=$RG_NAME" >> "$GITHUB_OUTPUT"
           echo "workspace=$WS_NAME" >> "$GITHUB_OUTPUT"
 
@@ -68,24 +63,31 @@ jobs:
             exit 1
           fi
 
-          ACC=$(grep -o "Accuracy: .*" training_output.log | tail -n 1 | awk '{print $2}') || true
-          AUC=$(grep -o "AUC: .*" training_output.log | tail -n 1 | awk '{print $2}') || true
+          # Try multiple pattern formats to catch metrics ← ADDED FIX
+          ACC=$(grep -oiE "(Accuracy|accuracy): [0-9]+\.?[0-9]*" training_output.log | tail -n 1 | awk '{print $2}') || true
+          AUC=$(grep -oiE "(AUC|auc): [0-9]+\.?[0-9]*" training_output.log | tail -n 1 | awk '{print $2}') || true
+
+          # Fallback: try JSON format if plain text not found ← ADDED FIX
+          if [ -z "$ACC" ]; then
+            ACC=$(grep -o '"Accuracy": [0-9.]*' training_output.log | tail -n 1 | awk '{print $2}') || true
+          fi
+          if [ -z "$AUC" ]; then
+            AUC=$(grep -o '"AUC": [0-9.]*' training_output.log | tail -n 1 | awk '{print $2}') || true
+          fi
 
           echo "Prod accuracy: $ACC"
           echo "Prod AUC: $AUC"
-
           echo "prod_accuracy=$ACC" >> "$GITHUB_OUTPUT"
           echo "prod_auc=$AUC" >> "$GITHUB_OUTPUT"
 
       - name: Comment prod metrics on pull request
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}    # ← ADDED FIX
           script: |
             const acc = '${{ steps.parse-metrics.outputs.prod_accuracy }}';
             const auc = '${{ steps.parse-metrics.outputs.prod_auc }}';
-
             const prNumber = context.issue.number;
-
             let body = '✅ Prod training workflow completed.';
             if (acc || auc) {
               body += '\n\n**Prod evaluation metrics**';
@@ -94,7 +96,6 @@ jobs:
             } else {
               body += '\n\nMetrics could not be parsed from logs. Check the Azure Machine Learning job run for details.';
             }
-
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
