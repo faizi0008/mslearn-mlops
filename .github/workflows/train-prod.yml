@@ -5,7 +5,7 @@ on:
 permissions:
   contents: read
   issues: write
-  pull-requests: write    # ← ADDED FIX
+  pull-requests: write
 
 jobs:
   train-prod:
@@ -48,12 +48,24 @@ jobs:
         id: train
         run: |
           JOB_NAME="diabetes-train-prod-${{ github.run_id }}"
+          echo "JOB_NAME=$JOB_NAME" >> "$GITHUB_ENV"
           echo "Running Azure ML job in prod: $JOB_NAME"
           az ml job create \
             -f src/job.yml \
             --name "$JOB_NAME" \
             --set inputs.training_data.path=azureml:diabetes-prod-folder@latest \
             --stream | tee training_output.log
+
+      - name: Register trained model        # ← NEW STEP
+        run: |
+          echo "Registering model from job: $JOB_NAME"
+          az ml model create \
+            --name "diabetes-model" \
+            --path "azureml://jobs/$JOB_NAME/outputs/artifacts/paths/model/" \
+            --type mlflow_model \
+            --resource-group "${{ steps.detect.outputs.resource_group }}" \
+            --workspace-name "${{ steps.detect.outputs.workspace }}"
+          echo "Model registered successfully as 'diabetes-model'"
 
       - name: Extract prod metrics from logs
         id: parse-metrics
@@ -62,28 +74,24 @@ jobs:
             echo "No training_output.log found to parse metrics." >&2
             exit 1
           fi
-
-          # Try multiple pattern formats to catch metrics ← ADDED FIX
           ACC=$(grep -oiE "(Accuracy|accuracy): [0-9]+\.?[0-9]*" training_output.log | tail -n 1 | awk '{print $2}') || true
           AUC=$(grep -oiE "(AUC|auc): [0-9]+\.?[0-9]*" training_output.log | tail -n 1 | awk '{print $2}') || true
-
-          # Fallback: try JSON format if plain text not found ← ADDED FIX
           if [ -z "$ACC" ]; then
             ACC=$(grep -o '"Accuracy": [0-9.]*' training_output.log | tail -n 1 | awk '{print $2}') || true
           fi
           if [ -z "$AUC" ]; then
             AUC=$(grep -o '"AUC": [0-9.]*' training_output.log | tail -n 1 | awk '{print $2}') || true
           fi
-
           echo "Prod accuracy: $ACC"
           echo "Prod AUC: $AUC"
           echo "prod_accuracy=$ACC" >> "$GITHUB_OUTPUT"
           echo "prod_auc=$AUC" >> "$GITHUB_OUTPUT"
 
       - name: Comment prod metrics on pull request
+        continue-on-error: true
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}    # ← ADDED FIX
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const acc = '${{ steps.parse-metrics.outputs.prod_accuracy }}';
             const auc = '${{ steps.parse-metrics.outputs.prod_auc }}';
